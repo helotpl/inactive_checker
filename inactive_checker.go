@@ -7,7 +7,6 @@ import (
 	"github.com/antchfx/xmlquery"
 	"github.com/helloyi/go-sshclient"
 	"gopkg.in/yaml.v2"
-	"io/ioutil"
 	"log"
 	"os"
 	"strings"
@@ -91,13 +90,22 @@ func (c *Config) readConfig() {
 	}
 }
 
-//func SSHWorker(id int, conf SSHClient, sshhosts <-chan string, result chan<- []string) {
-//	for sshhost := range sshhosts {
-//
-//	}
-//}
+type SSHResult struct {
+	err    error
+	result []string
+	host   string
+}
 
-func ProcessSSHHost(conf SSHClient, sshhost string) ([]string, error) {
+func SSHWorker(id int, conf SSHClient, sshhosts <-chan string, result chan<- SSHResult) {
+	for sshhost := range sshhosts {
+		fmt.Println("Worker", id, "started working on", sshhost)
+		r := ProcessSSHHost(conf, sshhost)
+		fmt.Println("Worker", id, "finished working on", sshhost)
+		result <- r
+	}
+}
+
+func ProcessSSHHost(conf SSHClient, sshhost string) SSHResult {
 	var client *sshclient.Client
 	var err error
 	if len(conf.KeyFile) > 0 {
@@ -106,25 +114,25 @@ func ProcessSSHHost(conf SSHClient, sshhost string) ([]string, error) {
 		client, err = sshclient.DialWithPasswd(sshhost+":22", conf.User, conf.Pass)
 	}
 	if err != nil {
-		return nil, err
+		return SSHResult{err: err, host: sshhost}
 	}
 	defer client.Close()
 
 	out, err := client.Cmd("show configuration | display xml").Output()
 	if err != nil {
-		log.Fatal(err)
+		return SSHResult{err: err, host: sshhost}
 	}
 
 	doc, err := xmlquery.Parse(bytes.NewReader(out))
 	if err != nil {
-		log.Fatal(err)
+		return SSHResult{err: err, host: sshhost}
 	}
 
 	var ret []string
 	for _, res := range xmlquery.Find(doc, "//*[@inactive and not(ancestor::*[@inactive])]") {
 		ret = append(ret, sshhost+":"+GetPath(res))
 	}
-	return ret, nil
+	return SSHResult{result: ret, host: sshhost}
 }
 
 func main() {
@@ -139,20 +147,25 @@ func main() {
 
 	fmt.Printf("%v\n", cfg)
 
-	for _, filename := range args {
-		test, err := ioutil.ReadFile(filename)
-		if err != nil {
-			log.Fatal(err)
-		}
+	sshhosts := make(chan string, len(cfg.SSHHosts))
+	results := make(chan SSHResult, len(cfg.SSHHosts))
 
-		doc, err := xmlquery.Parse(bytes.NewReader(test))
-		if err != nil {
-			log.Fatal(err)
-		}
+	for w := 1; w <= *cfg.SSHClient.NumWorkers; w++ {
+		go SSHWorker(w, cfg.SSHClient, sshhosts, results)
+	}
 
-		for _, n := range xmlquery.Find(doc, "//*[@inactive and not(ancestor::*[@inactive])]") {
-			fmt.Println(GetPath(n))
-		}
+	for _, j := range cfg.SSHHosts {
+		sshhosts <- j
+	}
+	close(sshhosts)
 
+	for a := 1; a <= len(cfg.SSHHosts); a++ {
+		result := <-results
+		if result.err != nil {
+			log.Fatalf("%s : %v\n", result.host, result.err)
+		}
+		for _, r := range result.result {
+			fmt.Println(r)
+		}
 	}
 }
