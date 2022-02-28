@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"github.com/antchfx/xmlquery"
 	"github.com/dgraph-io/badger"
@@ -98,11 +99,15 @@ type SSHResult struct {
 	host   string
 }
 
-func SSHWorker(id int, conf SSHClient, sshhosts <-chan string, result chan<- SSHResult) {
+func SSHWorker(id int, conf SSHClient, sshhosts <-chan string, result chan<- SSHResult, verbose bool) {
 	for sshhost := range sshhosts {
-		fmt.Println("Worker", id, "started working on", sshhost)
+		if verbose {
+			fmt.Println("Worker", id, "started working on", sshhost)
+		}
 		r := ProcessSSHHost(conf, sshhost)
-		fmt.Println("Worker", id, "finished working on", sshhost)
+		if verbose {
+			fmt.Println("Worker", id, "finished working on", sshhost)
+		}
 		result <- r
 	}
 }
@@ -166,17 +171,67 @@ func (c *InactiveCache) SetNow(inactive string) error {
 	return err
 }
 
+func (c *InactiveCache) Remove(inactive string) error {
+	err := c.db.Update(func(txn *badger.Txn) error {
+		err := txn.Delete([]byte(inactive))
+		return err
+	})
+	return err
+}
+
+func (c *InactiveCache) GetAll() (map[string]time.Time, error) {
+	ret := make(map[string]time.Time)
+	err := c.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchSize = 10
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			k := item.Key()
+			err := item.Value(func(v []byte) error {
+				t := binary.BigEndian.Uint64(v)
+				ret[string(k)] = time.Unix(int64(t), 0)
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	return ret, err
+}
+
 func main() {
+	var verbose bool
+	var store bool
+	flag.BoolVar(&verbose, "v", false, "More output needed")
+	flag.BoolVar(&store, "s", false, "Use cache to determine stale entries (>30days)")
+	flag.Parse()
+
+	if verbose {
+		store = true
+	}
+
 	var cfg Config
 	cfg.readConfig()
 
-	fmt.Printf("%v\n", cfg)
+	cache := InactiveCache{}
+	err := cache.Open("database.db")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer cache.Close()
+
+	//fmt.Printf("%v\n", cfg)
 
 	sshhosts := make(chan string, len(cfg.SSHHosts))
 	results := make(chan SSHResult, len(cfg.SSHHosts))
 
 	for w := 1; w <= *cfg.SSHClient.NumWorkers; w++ {
-		go SSHWorker(w, cfg.SSHClient, sshhosts, results)
+		go SSHWorker(w, cfg.SSHClient, sshhosts, results, verbose)
 	}
 
 	for _, j := range cfg.SSHHosts {
@@ -184,13 +239,60 @@ func main() {
 	}
 	close(sshhosts)
 
+	older, err := cache.GetAll()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	touched := make(map[string]bool)
+
 	for a := 1; a <= len(cfg.SSHHosts); a++ {
 		result := <-results
 		if result.err != nil {
 			log.Fatalf("%s : %v\n", result.host, result.err)
 		}
 		for _, r := range result.result {
-			fmt.Println(r)
+			if !store {
+				fmt.Println(r)
+			} else {
+				touched[r] = true
+				if prevTime, ok := older[r]; ok {
+					diff := time.Since(prevTime)
+					if diff.Hours() > 24*30 {
+						if verbose {
+							fmt.Println("STALE:", r, "diff:", diff.Round(time.Second))
+						} else {
+							fmt.Println(r)
+						}
+					} else {
+						if verbose {
+							fmt.Println("fresh:", r, "diff:", diff.Round(time.Second))
+						}
+					}
+				} else {
+					if verbose {
+						fmt.Println("new:  ", r)
+					}
+					err = cache.SetNow(r)
+					if err != nil {
+						log.Fatal(err)
+					}
+				}
+			}
+		}
+	}
+	if store {
+		for t := range touched {
+			delete(older, t)
+		}
+		for o := range older {
+			if verbose {
+				fmt.Println("rem:  ", o)
+			}
+			err = cache.Remove(o)
+			if err != nil {
+				log.Fatal(err)
+			}
 		}
 	}
 }
