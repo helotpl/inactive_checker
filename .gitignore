@@ -3,3 +3,5 @@
 *.db
 *.iml
 *.yml
+go.mod
+go.sum

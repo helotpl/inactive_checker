@@ -2,14 +2,16 @@ package main
 
 import (
 	"bytes"
-	"flag"
+	"encoding/binary"
 	"fmt"
 	"github.com/antchfx/xmlquery"
+	"github.com/dgraph-io/badger"
 	"github.com/helloyi/go-sshclient"
 	"gopkg.in/yaml.v2"
 	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 func GetName(node *xmlquery.Node) string {
@@ -135,13 +137,36 @@ func ProcessSSHHost(conf SSHClient, sshhost string) SSHResult {
 	return SSHResult{result: ret, host: sshhost}
 }
 
-func main() {
-	flag.Parse()
-	args := flag.Args()
-	if len(args) < 1 {
-		log.Fatal("missing file as command argument")
-	}
+type InactiveCache struct {
+	db *badger.DB
+}
 
+func (c *InactiveCache) Open(file string) error {
+	opts := badger.DefaultOptions(file)
+	opts.Logger = nil
+	db, err := badger.Open(opts)
+	if err != nil {
+		return err
+	}
+	c.db = db
+	return nil
+}
+
+func (c *InactiveCache) Close() {
+	c.db.Close()
+}
+
+func (c *InactiveCache) SetNow(inactive string) error {
+	err := c.db.Update(func(txn *badger.Txn) error {
+		timeNowBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(timeNowBytes, uint64(time.Now().Unix()))
+		err := txn.Set([]byte(inactive), timeNowBytes)
+		return err
+	})
+	return err
+}
+
+func main() {
 	var cfg Config
 	cfg.readConfig()
 
