@@ -85,7 +85,12 @@ func (c *Config) readConfig() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		err = f.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	decoder := yaml.NewDecoder(f)
 	err = decoder.Decode(c)
@@ -124,7 +129,12 @@ func ProcessSSHHost(conf SSHClient, sshhost string) SSHResult {
 	if err != nil {
 		return SSHResult{err: err, host: sshhost}
 	}
-	defer client.Close()
+	defer func() {
+		err := client.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	out, err := client.Cmd("show configuration | display xml").Output()
 	if err != nil {
@@ -158,8 +168,8 @@ func (c *InactiveCache) Open(file string) error {
 	return nil
 }
 
-func (c *InactiveCache) Close() {
-	c.db.Close()
+func (c *InactiveCache) Close() error {
+	return c.db.Close()
 }
 
 func (c *InactiveCache) SetNow(inactive string) error {
@@ -224,7 +234,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer cache.Close()
+	defer func() {
+		err := cache.Close()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
 
 	//fmt.Printf("%v\n", cfg)
 
