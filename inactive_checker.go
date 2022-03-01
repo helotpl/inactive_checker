@@ -77,6 +77,7 @@ type SSHClient struct {
 type Config struct {
 	SSHClient SSHClient `yaml:"ssh-client"`
 	SSHHosts  []string  `yaml:"ssh-hosts"`
+	Whitelist []string  `yaml:"whitelist"`
 }
 
 func (c *Config) readConfig() {
@@ -245,6 +246,11 @@ func main() {
 	}
 
 	touched := make(map[string]bool)
+	whitelistMap := make(map[string]bool)
+
+	for _, w := range cfg.Whitelist {
+		whitelistMap[w] = true
+	}
 
 	for a := 1; a <= len(cfg.SSHHosts); a++ {
 		result := <-results
@@ -252,6 +258,9 @@ func main() {
 			log.Fatalf("%s : %v\n", result.host, result.err)
 		}
 		for _, r := range result.result {
+			if whitelistMap[r] {
+				continue
+			}
 			if !store {
 				fmt.Println(r)
 			} else {
