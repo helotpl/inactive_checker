@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"flag"
@@ -8,10 +9,12 @@ import (
 	"github.com/antchfx/xmlquery"
 	"github.com/dgraph-io/badger"
 	"github.com/helloyi/go-sshclient"
+	"golang.org/x/term"
 	"gopkg.in/yaml.v2"
 	"log"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,6 +24,30 @@ func GetName(node *xmlquery.Node) string {
 		return n.InnerText()
 	}
 	return ""
+}
+
+func promptUser() (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter username: ")
+	username, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	return strings.TrimSpace(username), nil
+}
+
+func promptPass() (string, error) {
+	fmt.Print("Enter password: ")
+	bytePass, err := term.ReadPassword(int(syscall.Stdin))
+	if err != nil {
+		return "", err
+	}
+
+	password := string(bytePass)
+
+	return strings.TrimSpace(password), nil
 }
 
 func GetPath(node *xmlquery.Node) string {
@@ -97,6 +124,24 @@ func (c *Config) readConfig() {
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func (c *Config) validate() error {
+	if len(c.SSHClient.User) == 0 {
+		user, err := promptUser()
+		if err != nil {
+			return err
+		}
+		c.SSHClient.User = user
+	}
+	if len(c.SSHClient.Pass) == 0 && len(c.SSHClient.KeyFile) == 0 {
+		pass, err := promptPass()
+		if err != nil {
+			return err
+		}
+		c.SSHClient.Pass = pass
+	}
+	return nil
 }
 
 type SSHResult struct {
@@ -228,9 +273,13 @@ func main() {
 
 	var cfg Config
 	cfg.readConfig()
+	err := cfg.validate()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	cache := InactiveCache{}
-	err := cache.Open("database.db")
+	err = cache.Open("database.db")
 	if err != nil {
 		log.Fatal(err)
 	}
